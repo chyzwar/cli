@@ -44,7 +44,7 @@
     "convert-source-map": "^1.6.0",
     "fast-glob": "^3.2.5",
     "lodash": "^4.17.11",
-    "slash": "3.0.0",
+    "slash": "4.0.0",
     "source-map": "^0.7.3"
   },
   "devDependencies": {

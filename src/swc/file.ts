@@ -1,214 +1,181 @@
-import swc from "@swc/core";
-import path from "path";
 import slash from "slash";
-import { SourceMapConsumer, SourceMapGenerator } from "source-map";
+import { Options, Output } from "@swc/core";
+import { dirname, relative } from "path";
+import { compile } from "./compile";
 
 import { CliOptions } from "./options";
-import { globSources, isCompilableExtension, watchSources } from "./sources";
-import * as util from "./util";
+import { globSources, slitCompilableAndCopyable } from "./sources";
+import { SourceMapConsumer, SourceMapGenerator } from "source-map";
 
-export default async function ({
-  cliOptions,
-  swcOptions
-}: {
-  cliOptions: CliOptions;
-  swcOptions: swc.Options;
-}) {
-  async function concatResults(
-    file: string,
-    ...results: swc.Output[]
-  ): Promise<swc.Output> {
-    const map = new SourceMapGenerator({
-      file,
-      sourceRoot: swcOptions.sourceRoot
-    });
 
-    let code = "";
-    let offset = 0;
+async function concatResults(
+  file: string,
+  results: Map<string, Output>
+): Promise<Output> {
+  const map = new SourceMapGenerator({
+    file,
+    sourceRoot: swcOptions.sourceRoot
+  });
 
-    for (const result of results) {
-      code += result.code + "\n";
+  let code = "";
+  let offset = 0;
 
-      if (result.map) {
-        const consumer = await new SourceMapConsumer(result.map);
-        const sources = new Set<string>();
+  for (const [file, result] of results) {
+    code += result.code + "\n";
 
-        consumer.eachMapping(mapping => {
-          sources.add(mapping.source);
-          map.addMapping({
-            generated: {
-              line: mapping.generatedLine + offset,
-              column: mapping.generatedColumn
-            },
-            original: {
-              line: mapping.originalLine,
-              column: mapping.originalColumn
-            },
-            source: mapping.source
-          });
+    if (result.map) {
+      const consumer = await new SourceMapConsumer(result.map);
+      const sources = new Set<string>();
+
+      consumer.eachMapping(mapping => {
+        sources.add(mapping.source);
+        map.addMapping({
+          generated: {
+            line: mapping.generatedLine + offset,
+            column: mapping.generatedColumn
+          },
+          original: {
+            line: mapping.originalLine,
+            column: mapping.originalColumn
+          },
+          source: mapping.source
         });
+      });
 
-        sources.forEach(source => {
-          const content = consumer.sourceContentFor(source, true);
-          if (content !== null) {
-            map.setSourceContent(source, content);
-          }
-        });
-      }
-      offset = code.split("\n").length - 1;
+      sources.forEach(source => {
+        const content = consumer.sourceContentFor(source, true);
+        if (content !== null) {
+          map.setSourceContent(source, content);
+        }
+      });
     }
-
-    return {
-      code,
-      map: JSON.stringify(map)
-    };
+    offset = code.split("\n").length - 1;
   }
 
-  async function output(results: Iterable<swc.Output>) {
-    const file = cliOptions.sourceMapTarget || path.basename(cliOptions.outFile || "stdout");
+  return {
+    code,
+    map: JSON.stringify(map)
+  };
+}
 
-    const result = await concatResults(file, ...results);
+async function outputResults(results: Map<string, Output>) {
+  const file = cliOptions.sourceMapTarget || path.basename(cliOptions.outFile || "stdout");
 
-    if (cliOptions.outFile) {
-      util.outputFile(result, cliOptions.outFile, swcOptions.sourceMaps);
-    } else {
-      process.stdout.write(result.code + "\n");
-      if (result.map) {
-        const map = `//#sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(JSON.stringify(result.map), 'utf8').toString('base64')}`
-        process.stdout.write(map);
-      }
+  const result = await concatResults(file, results);
+
+  if (cliOptions.outFile) {
+    util.outputFile(result, cliOptions.outFile, swcOptions.sourceMaps);
+  } else {
+    process.stdout.write(result.code + "\n");
+    if (result.map) {
+      const map = `//#sourceMappingURL=data:application/json;charset=utf-8;base64,${Buffer.from(JSON.stringify(result.map), 'utf8').toString('base64')}`
+      process.stdout.write(map);
     }
   }
+}
 
-  async function handle(filename: string) {
-    const sourceFileName = slash(
-      cliOptions.outFile
-        ? path.relative(path.dirname(cliOptions.outFile), filename)
-        : filename
-    );
-    return await util.compile(
-      filename,
-      {
-        ...swcOptions,
-        sourceFileName,
-        // Since we're compiling everything to be merged together,
-        // "inline" applies to the final output file, but not to the individual
-        // files being concatenated.
-        sourceMaps: Boolean(swcOptions.sourceMaps),
+async function handleCompile(filename: string, outFile: string, sync: boolean, swcOptions: Options) {
+  const sourceFileName = slash(relative(dirname(outFile), filename));
 
-      },
-      cliOptions.sync
-    );
-  }
+  const options = { ...swcOptions, sourceFileName }
 
-  async function getProgram(previousResults: Map<string, swc.Output | Error> = new Map()) {
-    const results: typeof previousResults = new Map();
+  return await compile(
+    filename,
+    options,
+    sync
+  );
+}
 
-    for (const filename of await globSources(cliOptions.filenames, cliOptions.includeDotfiles)) {
-      if (isCompilableExtension(filename, cliOptions.extensions)) {
-        results.set(filename, previousResults.get(filename)!);
-      }
-    }
-    return results;
-  }
+async function initialCompilation(cliOptions: CliOptions, swcOptions: Options) {
+  const {
+    includeDotfiles,
+    filenames,
+    copyFiles,
+    extensions,
+    outFile,
+    sync,
+    quiet,
+    watch,
+  } = cliOptions;
 
-  async function files() {
-    let results = await getProgram();
-    for (const filename of results.keys()) {
+  const results = new Map<string, Error | Output>();
+
+  const start = process.hrtime();
+  const sourceFiles = await globSources(filenames, includeDotfiles)
+  const [
+    compilable,
+  ] = slitCompilableAndCopyable(sourceFiles, extensions, copyFiles)
+
+  if (sync) {
+    for (const filename of compilable) {
       try {
-        const result = await handle(filename);
+        const result = await handleCompile(filename, outFile, sync, swcOptions);
         if (result) {
           results.set(filename, result);
-        } else {
-          results.delete(filename);
         }
       } catch (err) {
         console.error(err.message);
         results.set(filename, err);
       }
     }
-
-    if (cliOptions.watch) {
-      const watcher = await watchSources(cliOptions.filenames, cliOptions.includeDotfiles);
-      watcher.on('ready', () => {
-        Promise.resolve()
-          .then(async () => {
-            util.assertCompilationResult(results, cliOptions.quiet);
-            await output(results.values());
-            if (!cliOptions.quiet) {
-              console.info('Watching for file changes.')
-            }
-          })
-          .catch((err) => {
-            console.error(err.message);
-          });
-      });
-      watcher.on("add", async (filename) => {
-        if (isCompilableExtension(filename, cliOptions.extensions)) {
-          // ensure consistent insertion order when files are added
-          results = await getProgram(results);
-        }
-      });
-      watcher.on("unlink", (filename) => {
-        results.delete(filename);
-      });
-      for (const type of ["add", "change"]) {
-        watcher.on(type, (filename) => {
-          if (!isCompilableExtension(filename, cliOptions.extensions)) {
-            return;
-          }
-
-          const start = process.hrtime();
-
-          handle(filename)
-            .then(async (result) => {
-              if (!result) {
-                results.delete(filename);
-                return;
-              }
-              results.set(filename, result);
-              util.assertCompilationResult(results, true);
-              await output(results.values());
-              if (!cliOptions.quiet) {
-                const [seconds, nanoseconds] = process.hrtime(start);
-                const ms = seconds * 1000 + (nanoseconds * 1e-6);
-                const name = path.basename(cliOptions.outFile);
-                console.log(`Compiled ${name} in ${ms.toFixed(2)}ms`);
-              }
-            })
-            .catch((err) => {
-              console.error(err.message);
-            });
-        });
-      }
-    } else {
-      util.assertCompilationResult(results, cliOptions.quiet);
-      await output(results.values());
-    }
-  }
-
-  async function stdin() {
-    let code = "";
-    process.stdin.setEncoding("utf8");
-    for await (const chunk of process.stdin) {
-      code += chunk;
-    }
-    const res = await util.transform(
-      cliOptions.filename,
-      code,
-      {
-        ...swcOptions,
-        sourceFileName: "stdin"
-      },
-      cliOptions.sync
-    );
-
-    output([res]);
-  }
-
-  if (cliOptions.filenames.length) {
-    await files();
   } else {
-    await stdin();
+    await Promise.allSettled(compilable.map(file => handleCompile(file, outFile, sync, swcOptions)))
+      .then((compiled) => {
+        compiled.forEach((result, index) => {
+          const filename = compilable[index];
+          if (result.status === "fulfilled") {
+            if (result.value) {
+              results.set(filename, result.value);
+            }
+          } else {
+            results.set(filename, result.reason);
+          }
+        });
+      });
+  }
+  const end = process.hrtime(start);
+
+  let failed = 0;
+  let compiled = 0;
+  for (let [_, result] of results) {
+    if (result instanceof Error) {
+      failed += 1;
+    } else {
+      compiled += 1;
+    }
+  }
+
+  if (!quiet && compiled) {
+    let message = `Successfully compiled: ${compiled} ${compiled > 1 ? 'files' : 'file'} with swc (%dms)`;
+    console.log(message, (end[1] / 1000000).toFixed(2));
+  }
+
+  if (failed) {
+    console.log(`Failed to compile ${failed} ${failed !== 1 ? "files" : "file"} with swc.`)
+    if (!watch) {
+      process.exit(1);
+    }
+  } else {
+    await outputResults(results as Map<string, Output>);
+  }
+
+  return results
+}
+
+export default async function file({
+  cliOptions,
+  swcOptions
+}: {
+  cliOptions: CliOptions;
+  swcOptions: Options;
+}) {
+  const {
+    watch,
+  } = cliOptions;
+
+  const results = await initialCompilation(cliOptions, swcOptions);
+
+  if (watch) {
+    await watchCompilation(results, cliOptions, swcOptions);
   }
 }

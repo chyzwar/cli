@@ -236,14 +236,15 @@ export default function parserArgs(args: string[]) {
     outFile: opts.outFile,
     filename: opts.filename,
     filenames,
-    sync: !!opts.sync,
     sourceMapTarget: opts.sourceMapTarget,
     extensions: opts.extensions || DEFAULT_EXTENSIONS,
-    watch: !!opts.watch,
-    copyFiles: !!opts.copyFiles,
-    includeDotfiles: !!opts.includeDotfiles,
+
+    sync: Boolean(opts.sync),
+    watch: Boolean(opts.watch),
+    copyFiles: Boolean(opts.copyFiles),
+    includeDotfiles: Boolean(opts.includeDotfiles),
     deleteDirOnStart: Boolean(opts.deleteDirOnStart),
-    quiet: !!opts.quiet,
+    quiet: Boolean(opts.quiet),
   };
   return {
     swcOptions,

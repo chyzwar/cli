@@ -3,8 +3,7 @@ import { existsSync, promises } from "fs";
 import { dirname, relative, join } from "path";
 import { CompileStatus } from "./constants";
 import { CliOptions } from "./options";
-import { compile } from "./util";
-import { outputResult } from "./compile";
+import { outputResult, compile } from "./compile";
 import {
   globSources,
   isCompilableExtension,
@@ -83,7 +82,6 @@ async function handleCopy(filename: string, outDir: string) {
   const dest = getDest(filename, outDir);
   const dir = dirname(dest);
 
-  console.log(filename)
   await mkdir(dir, recursive);
   await copyFile(filename, dest);
 
@@ -209,7 +207,7 @@ async function initialCompilation(cliOptions: CliOptions, swcOptions: Options) {
   if (failed) {
     console.log(`Failed to compile ${failed} ${failed !== 1 ? "files" : "file"} with swc.`)
     if (!watch) {
-      throw new Error("Failed to compile");
+      process.exit(1);
     }
   }
 }

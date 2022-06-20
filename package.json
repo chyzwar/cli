@@ -52,7 +52,7 @@
     "@swc/core": "^1.2.4",
     "@swc/jest": "^0.1.2",
     "@types/convert-source-map": "^1.5.1",
-    "@types/jest": "^26.0.23",
+    "@types/jest": "^28.1.2",
     "@types/lodash": "^4.14.155",
     "@types/node": "^12.19.16",
     "chokidar": "^3.5.1",
